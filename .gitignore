@@ -1,0 +1,5 @@
+etf_flow_daily.csv
+etf_flow_daily_readable.csv
+etf_flow_signal.png
+__pycache__/
+*.pyc
