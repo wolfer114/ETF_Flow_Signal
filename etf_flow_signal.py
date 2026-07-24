@@ -25,7 +25,7 @@ What it does:
        d. Divergence detector: continuous score = price's percentile rank
           in its 20d range minus flow's percentile rank in its 20d range
           (graded strength, not just a binary new-high/new-low flag).
-  3b. Pulls BTCUSDT perpetual funding rate (Bybit, free public endpoint)
+  3b. Pulls BTC-PERPETUAL funding rate (Deribit, free public endpoint)
       as a positioning/crowding read, and Deribit's DVOL index (BTC's
       30d implied-vol index) to compute the vol risk premium (IV - 20d
       realized vol) — the number that actually answers "is premium worth
@@ -166,46 +166,42 @@ def fetch_btc(btc_csv: str | None) -> pd.Series:
 
 
 def fetch_funding_rate(start: str = "2024-01-01") -> pd.Series:
-    """Daily BTCUSDT perpetual funding rate (Bybit, summed from 8h prints).
+    """Daily BTC-PERPETUAL funding rate (Deribit, summed from hourly prints).
     Positive = longs pay shorts: a crowded-long / bullish-carry-cost read
     that's orthogonal to spot flows and price (it's a derivatives
     positioning signal, not a spot-demand one).
-    Bybit rather than Binance: Binance's futures API 451s (geo-restricted)
-    from US-hosted CI runners like GitHub Actions. Bybit paginates backward
-    via `endTime` (200 rows/call, newest-first), unlike Binance's forward
-    `startTime` pagination. Uses cloudscraper, not plain requests: Bybit's
-    public endpoint also 403s CI/datacenter IPs (same bot/IP-reputation
-    filtering as farside.co.uk), even though it works fine unauthenticated
-    from a residential IP with plain requests."""
-    import cloudscraper
+    Deribit rather than Binance or Bybit: Binance's futures API 451s
+    (legal geo-restriction) from GitHub Actions' IPs, and Bybit's public
+    endpoint 403s them too (bot/IP-reputation filtering that even
+    cloudscraper couldn't get past). Deribit's own domain already works
+    fine for DVOL, so its funding-history endpoint (same domain) does too.
+    Paginates backward via `end_timestamp` -- the API caps at ~744 hourly
+    rows (~31 days) per call regardless of the requested `start_timestamp`."""
+    import requests
 
-    scraper = cloudscraper.create_scraper()
     start_ms = int(pd.Timestamp(start, tz="UTC").timestamp() * 1000)
     cur_end = int(pd.Timestamp.now(tz="UTC").timestamp() * 1000)
     rows = []
     while True:
-        r = scraper.get(
-            "https://api.bybit.com/v5/market/funding/history",
-            params={"category": "linear", "symbol": "BTCUSDT", "endTime": cur_end, "limit": 200},
-            timeout=20,
+        r = requests.get(
+            "https://www.deribit.com/api/v2/public/get_funding_rate_history",
+            params={"instrument_name": "BTC-PERPETUAL", "start_timestamp": start_ms,
+                    "end_timestamp": cur_end},
+            headers=UA, timeout=30,
         )
         r.raise_for_status()
-        data = r.json()
-        if data.get("retCode") != 0:
-            raise RuntimeError(f"Bybit API error: {data.get('retMsg')}")
-        batch = data["result"]["list"]
+        batch = r.json()["result"]
         if not batch:
             break
         rows.extend(batch)
-        oldest_ts = int(batch[-1]["fundingRateTimestamp"])
+        oldest_ts = batch[0]["timestamp"]
         if oldest_ts <= start_ms:
             break
         cur_end = oldest_ts - 1
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["fundingRateTimestamp"].astype(np.int64), unit="ms").dt.normalize()
-    df["fundingRate"] = df["fundingRate"].astype(float)
+    df = pd.DataFrame(rows).drop_duplicates(subset="timestamp")
+    df["date"] = pd.to_datetime(df["timestamp"].astype(np.int64), unit="ms").dt.normalize()
     df = df[df["date"] >= pd.Timestamp(start)]
-    daily = df.groupby("date")["fundingRate"].sum()
+    daily = df.groupby("date")["interest_1h"].sum()
     daily.name = "funding_daily"
     return daily.sort_index()
 
@@ -681,7 +677,7 @@ def main() -> None:
     ap.add_argument("--out-prefix", default="etf_flow",
                     help="prefix for output files")
     ap.add_argument("--no-options-data", action="store_true",
-                    help="skip fetching Bybit funding rate / Deribit DVOL")
+                    help="skip fetching Deribit funding rate / DVOL")
     args = ap.parse_args()
 
     if args.flows_html:
@@ -711,9 +707,9 @@ def main() -> None:
     if not args.no_options_data:
         try:
             funding = fetch_funding_rate()
-            print(f"Bybit funding rate: {len(funding)} daily rows")
+            print(f"Deribit funding rate: {len(funding)} daily rows")
         except Exception as e:
-            print(f"WARNING: could not fetch Bybit funding rate ({e}); continuing without it")
+            print(f"WARNING: could not fetch Deribit funding rate ({e}); continuing without it")
         try:
             dvol = fetch_dvol()
             print(f"Deribit DVOL: {len(dvol)} daily rows")
