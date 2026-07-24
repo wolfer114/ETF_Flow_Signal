@@ -127,9 +127,17 @@ def parse_farside_table(html: str) -> pd.DataFrame:
 
 
 def fetch_farside() -> pd.DataFrame:
-    import requests
+    # cloudscraper (not plain requests) because farside.co.uk sits behind
+    # Cloudflare bot protection that blocks known datacenter/CI IP ranges
+    # (e.g. GitHub Actions runners) outright -- cloudscraper emulates a
+    # real browser's TLS/JS fingerprint to get past that. Deliberately not
+    # passing our own headers here: cloudscraper picks headers matched to
+    # the TLS fingerprint it's emulating, and overriding them (e.g. the
+    # custom UA) can make the two inconsistent and trip detection anyway.
+    import cloudscraper
 
-    r = requests.get(FARSIDE_URL, headers=UA, timeout=30)
+    scraper = cloudscraper.create_scraper()
+    r = scraper.get(FARSIDE_URL, timeout=30)
     r.raise_for_status()
     return parse_farside_table(r.text)
 
