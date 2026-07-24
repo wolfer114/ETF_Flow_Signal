@@ -38,7 +38,16 @@ jobs:
             MSG="ETF flow signal run FAILED (exit ${{ steps.run.outputs.exit_code }}):
           $(tail -c 3000 report_output.txt)"
           else
-            MSG=$(head -c 3500 report_output.txt)
+            # Pull just the decision-relevant section (header through the
+            # options-market context / divergence note), skipping the
+            # detailed cross-correlation / quintile / regime-backtest
+            # tables -- those are for deep review, not a daily phone check.
+            MSG=$(awk '/ETF FLOW SIGNAL REPORT/,/Cross-correlation \(flow/' report_output.txt | sed '$d')
+            FLIP=$(grep "FLIP WATCH" report_output.txt || true)
+            if [ -n "$FLIP" ]; then
+              MSG="$MSG
+          $FLIP"
+            fi
           fi
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
