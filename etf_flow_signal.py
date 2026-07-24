@@ -171,20 +171,23 @@ def fetch_funding_rate(start: str = "2024-01-01") -> pd.Series:
     that's orthogonal to spot flows and price (it's a derivatives
     positioning signal, not a spot-demand one).
     Bybit rather than Binance: Binance's futures API 451s (geo-restricted)
-    from US-hosted CI runners like GitHub Actions; Bybit's public
-    market-data endpoint isn't subject to the same block. Bybit paginates
-    backward via `endTime` (200 rows/call, newest-first), unlike Binance's
-    forward `startTime` pagination."""
-    import requests
+    from US-hosted CI runners like GitHub Actions. Bybit paginates backward
+    via `endTime` (200 rows/call, newest-first), unlike Binance's forward
+    `startTime` pagination. Uses cloudscraper, not plain requests: Bybit's
+    public endpoint also 403s CI/datacenter IPs (same bot/IP-reputation
+    filtering as farside.co.uk), even though it works fine unauthenticated
+    from a residential IP with plain requests."""
+    import cloudscraper
 
+    scraper = cloudscraper.create_scraper()
     start_ms = int(pd.Timestamp(start, tz="UTC").timestamp() * 1000)
     cur_end = int(pd.Timestamp.now(tz="UTC").timestamp() * 1000)
     rows = []
     while True:
-        r = requests.get(
+        r = scraper.get(
             "https://api.bybit.com/v5/market/funding/history",
             params={"category": "linear", "symbol": "BTCUSDT", "endTime": cur_end, "limit": 200},
-            headers=UA, timeout=20,
+            timeout=20,
         )
         r.raise_for_status()
         data = r.json()
