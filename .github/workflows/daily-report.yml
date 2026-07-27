@@ -5,8 +5,20 @@ on:
     # 8:15 UTC = 9:15am Europe/Dublin while IST (UTC+1) is in effect.
     # Shifts to 9:15am UTC = 10:15am Dublin after DST ends in late October
     # unless this is updated to '15 9 * * *' at that point.
+    # Note: GitHub gives no SLA on `schedule` triggers -- under load it can
+    # fire 1-2+ hours late (observed: fired ~10:00-10:11 UTC on 2026-07-25/26
+    # against an 08:15 target). That jitter is a platform limitation, not
+    # something fixable from inside the workflow.
     - cron: '15 8 * * *'
   workflow_dispatch: {}
+
+concurrency:
+  # A schedule fire that's running very late could still be in flight when
+  # the next day's fire lands; without this a late run's stale-by-then
+  # report could land in Telegram after (or interleaved with) the next
+  # day's, reading like an old copy delivered at a random time.
+  group: daily-etf-report
+  cancel-in-progress: true
 
 jobs:
   run-and-report:
@@ -48,7 +60,24 @@ jobs:
               MSG="$MSG
           $FLIP"
             fi
+            if [ -z "$MSG" ]; then
+              # awk range didn't match (report format changed?) -- don't
+              # silently send nothing, and don't let it balloon to the
+              # whole multi-KB report either.
+              MSG="ETF flow signal run succeeded but the report text couldn't be extracted -- check the Actions log for report_output.txt"
+            fi
           fi
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+          # Telegram hard-caps messages at 4096 chars; truncate defensively
+          # so an oversized MSG (e.g. the awk fallback above) can't cause a
+          # silent rejection instead of a shorter-but-delivered message.
+          MSG="${MSG:0:3900}"
+          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=$MSG"
+            --data-urlencode "text=$MSG")
+          echo "Telegram HTTP status: $HTTP_STATUS"
+          cat response.json
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "::error::Telegram sendMessage failed (HTTP $HTTP_STATUS) -- see response above"
+            exit 1
+          fi
