@@ -9,7 +9,12 @@ on:
     # fire 1-2+ hours late (observed: fired ~10:00-10:11 UTC on 2026-07-25/26
     # against an 08:15 target). That jitter is a platform limitation, not
     # something fixable from inside the workflow.
-    - cron: '15 8 * * *'
+    # Weekdays only (1-5): Farside has no new flow row on Sat/Sun since US
+    # ETF markets don't trade, so weekend runs just re-send Friday's numbers
+    # -- confirmed by hitting farside.co.uk directly, which still shows Fri
+    # as its latest row through Monday morning. Skipping weekends kills
+    # those pointless duplicate "stale" sends.
+    - cron: '15 8 * * 1-5'
   workflow_dispatch: {}
 
 concurrency:
@@ -65,6 +70,19 @@ jobs:
               # silently send nothing, and don't let it balloon to the
               # whole multi-KB report either.
               MSG="ETF flow signal run succeeded but the report text couldn't be extracted -- check the Actions log for report_output.txt"
+            else
+              # Farside only posts new rows on US trading days and sometimes
+              # not until well after close, so the freshest row can lag the
+              # run date. Flag it explicitly rather than leaving it buried
+              # in the header date, which reads as "did this even rerun?"
+              REPORT_DATE=$(grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' <<< "$MSG" | head -1)
+              if [ -n "$REPORT_DATE" ]; then
+                AGE_DAYS=$(( ( $(date -u +%s) - $(date -u -d "$REPORT_DATE" +%s) ) / 86400 ))
+                if [ "$AGE_DAYS" -gt 1 ]; then
+                  MSG="NOTE: latest data available is from $REPORT_DATE ($AGE_DAYS days old -- Farside hasn't posted a newer row yet)
+          $MSG"
+                fi
+              fi
             fi
           fi
           # Telegram hard-caps messages at 4096 chars; truncate defensively
